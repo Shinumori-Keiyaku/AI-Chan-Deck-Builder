@@ -43,6 +43,9 @@ export default function App() {
     10: "xl:grid-cols-10",
   };
 
+  const SHEET_ID = '1TDHBWj79saP6by70vFLPOMoUwoLMxdX19eYfD6eJXSY';
+  const SHEETS_API_KEY = 'AIzaSyBasQBsecNqcPTHe3OjmC6QP67EyWtl5Hg';
+
   useEffect(() => {
     async function loadData() {
       try {
@@ -52,10 +55,10 @@ export default function App() {
         
         let serverDate = '';
         try {
-          const res1 = await fetch('/api/sheet/updated');
+          const res1 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!P1?key=${SHEETS_API_KEY}`);
           const data1 = await res1.json();
           if (res1.ok && !data1.error) {
-            serverDate = data1.updatedDate;
+            serverDate = data1.values?.[0]?.[0] || '';
           }
         } catch (e) {
           console.warn('Could not retrieve remote database update date:', e);
@@ -76,10 +79,10 @@ export default function App() {
         
         if (!rawData) {
           setUpdateStatus('Downloading latest card data...');
-          const res2 = await fetch('/api/sheet/data');
+          const res2 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!N:P?key=${SHEETS_API_KEY}`);
           const data2 = await res2.json();
           if (!res2.ok || data2.error) {
-            throw new Error(data2.error || 'Failed to fetch latest database.');
+            throw new Error(data2.error?.message || data2.error || 'Failed to fetch latest database.');
           }
           rawData = data2.values;
           if (rawData && rawData.length > 0) {
@@ -144,9 +147,6 @@ export default function App() {
       setDeck(JSON.parse(savedDeck));
     }
   }
-
-  const SHEET_ID = '1TDHBWj79saP6by70vFLPOMoUwoLMxdX19eYfD6eJXSY';
-  const SHEETS_API_KEY = 'AIzaSyBasQBsecNqcPTHe3OjmC6QP67EyWtl5Hg';
 
   const handleForceUpdate = async () => {
     try {
