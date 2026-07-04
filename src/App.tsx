@@ -18,6 +18,9 @@ export default function App() {
   const [pathname, setPathname] = useState(window.location.pathname);
   const isUpdatePage = pathname === '/update';
   
+  // API Key state for manually updating
+  const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem('google_sheets_api_key') || '');
+  
   // Database Update state
   const [updateStatus, setUpdateStatus] = useState<{
     status: 'idle' | 'checking' | 'updating' | 'updated' | 'up-to-date' | 'error';
@@ -71,45 +74,19 @@ export default function App() {
         setError('');
         const localData = localStorage.getItem('sheetData');
         
-        if (isUpdatePage) {
-          setUpdateStatus({ status: 'checking' });
-          const res1 = await fetch('/api/sheet/updated');
-          const data1 = await res1.json();
-          const serverDate = data1.updatedDate;
+        if (localData) {
+          const rawData = JSON.parse(localData);
+          processRawData(rawData);
           const localDate = localStorage.getItem('sheetUpdatedDate');
-          
-          if (serverDate && localDate === serverDate && localData) {
-            const rawData = JSON.parse(localData);
-            processRawData(rawData);
-            setUpdateStatus({ status: 'up-to-date', date: serverDate });
-          } else {
-            setUpdateStatus({ status: 'updating' });
-            const res2 = await fetch('/api/sheet/data');
-            const data2 = await res2.json();
-            const rawData = data2.values;
-            
-            if (serverDate) {
-              localStorage.setItem('sheetUpdatedDate', serverDate);
-              localStorage.setItem('sheetData', JSON.stringify(rawData));
-            }
-            processRawData(rawData);
-            setUpdateStatus({ status: 'updated', date: serverDate });
+          if (localDate) {
+            setUpdateStatus({ status: 'up-to-date', date: localDate });
           }
-        } else {
-          if (localData) {
-            const rawData = JSON.parse(localData);
-            processRawData(rawData);
-          } else {
-            setError('no-database');
-          }
+        } else if (!isUpdatePage) {
+          setError('no-database');
         }
       } catch (err) {
         console.error(err);
-        if (isUpdatePage) {
-          setUpdateStatus({ status: 'error', msg: 'Failed to fetch update info or sheet data. Check API key configuration.' });
-        } else {
-          setError('failed-loading');
-        }
+        setError('failed-loading');
       } finally {
         setLoading(false);
       }
@@ -146,24 +123,44 @@ export default function App() {
   }
 
   const handleForceUpdate = async () => {
+    if (!apiKeyInput.trim()) {
+      setUpdateStatus({ status: 'error', msg: 'Please enter a Google Sheets API Key.' });
+      return;
+    }
     try {
       setLoading(true);
-      setUpdateStatus({ status: 'updating' });
-      const res1 = await fetch('/api/sheet/updated');
+      setUpdateStatus({ status: 'checking' });
+      localStorage.setItem('google_sheets_api_key', apiKeyInput.trim());
+
+      const res1 = await fetch(`/api/sheet/updated?key=${encodeURIComponent(apiKeyInput.trim())}`);
       const data1 = await res1.json();
+      
+      if (!res1.ok || data1.error) {
+        throw new Error(data1.error?.message || data1.error || 'Failed to fetch update metadata.');
+      }
+      
       const serverDate = data1.updatedDate || new Date().toLocaleDateString();
 
-      const res2 = await fetch('/api/sheet/data');
+      setUpdateStatus({ status: 'updating' });
+      const res2 = await fetch(`/api/sheet/data?key=${encodeURIComponent(apiKeyInput.trim())}`);
       const data2 = await res2.json();
+      
+      if (!res2.ok || data2.error) {
+        throw new Error(data2.error?.message || data2.error || 'Failed to fetch sheet data.');
+      }
+      
       const rawData = data2.values;
+      if (!rawData || !Array.isArray(rawData) || rawData.length === 0) {
+        throw new Error('No data found in NewDataBase sheet.');
+      }
       
       localStorage.setItem('sheetUpdatedDate', serverDate);
       localStorage.setItem('sheetData', JSON.stringify(rawData));
       processRawData(rawData);
       setUpdateStatus({ status: 'updated', date: serverDate });
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setUpdateStatus({ status: 'error', msg: 'Force update failed.' });
+      setUpdateStatus({ status: 'error', msg: err.message || 'Update failed.' });
     } finally {
       setLoading(false);
     }
@@ -306,6 +303,7 @@ export default function App() {
             <div className="border-t border-zinc-800/80 pt-3 flex flex-col gap-1.5">
               <div className="text-xs text-zinc-500 font-medium uppercase tracking-wider">Update Progress</div>
               <div className="text-sm font-medium">
+                {updateStatus.status === 'idle' && <span className="text-zinc-500">Enter API Key below to start.</span>}
                 {updateStatus.status === 'checking' && <span className="text-blue-400 animate-pulse">Checking remote version...</span>}
                 {updateStatus.status === 'updating' && <span className="text-amber-400 animate-pulse">Fetching NewDataBase columns N:P...</span>}
                 {updateStatus.status === 'up-to-date' && <span className="text-green-400">✓ Up to date (v{updateStatus.date})</span>}
@@ -313,6 +311,22 @@ export default function App() {
                 {updateStatus.status === 'error' && <span className="text-red-400">Error: {updateStatus.msg}</span>}
               </div>
             </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5 mb-6">
+            <label className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              Google Sheets API Key
+            </label>
+            <input 
+              type="password"
+              placeholder="Paste your API Key here..."
+              value={apiKeyInput}
+              onChange={e => setApiKeyInput(e.target.value)}
+              className="w-full bg-zinc-950 border border-zinc-800 text-sm rounded-lg px-3.5 py-2.5 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 font-mono transition-colors"
+            />
+            <p className="text-[11px] text-zinc-500 leading-normal">
+              Your API key is used to authenticate with the Google Sheets API proxy and is saved only locally in your browser.
+            </p>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3">
@@ -327,7 +341,7 @@ export default function App() {
               disabled={loading}
               className="flex-1 py-2.5 px-4 bg-zinc-200 hover:bg-white disabled:opacity-50 text-zinc-950 text-sm font-semibold rounded-lg transition-colors cursor-pointer"
             >
-              {loading ? 'Processing...' : 'Force Refetch Data'}
+              {loading ? 'Processing...' : 'Perform Update'}
             </button>
           </div>
         </div>
