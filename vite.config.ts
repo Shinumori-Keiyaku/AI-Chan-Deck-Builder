@@ -4,8 +4,8 @@ import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
-	base: 'AI-Chan-Deck-Builder',
   return {
+	  base: 'AI-Chan-Deck-Builder',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
