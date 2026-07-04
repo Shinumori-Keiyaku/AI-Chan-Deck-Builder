@@ -13,20 +13,9 @@ export default function App() {
   const [deck, setDeck] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-
-  // Custom router state
-  const [pathname, setPathname] = useState(window.location.hash.slice(1) || '/');
-  const isUpdatePage = pathname === '/update';
-
-  // API Key state for manually updating
-  const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem('google_sheets_api_key') || '');
-
-  // Database Update state
-  const [updateStatus, setUpdateStatus] = useState<{
-    status: 'idle' | 'checking' | 'updating' | 'updated' | 'up-to-date' | 'error';
-    date?: string;
-    msg?: string;
-  }>({ status: 'idle' });
+  
+  // Database Update status state
+  const [updateStatus, setUpdateStatus] = useState<string>('');
 
   // Confirmation state for Clear Deck
   const [confirmClear, setConfirmClear] = useState(false);
@@ -36,12 +25,12 @@ export default function App() {
   const [typeFilter, setTypeFilter] = useState('All');
   const [sortField, setSortField] = useState<'id' | 'name' | 'group' | 'type'>('id');
   const [viewTab, setViewTab] = useState<'all' | 'deck'>('all');
-
+  
   const [gridCols, setGridCols] = useState(7);
-
+  
   // Card Details Modal
   const [selectedCard, setSelectedCard] = useState<Card | null>(null);
-
+  
   // Deck Code
   const [deckCodeInput, setDeckCodeInput] = useState('');
 
@@ -54,50 +43,84 @@ export default function App() {
     10: "xl:grid-cols-10",
   };
 
-  const navigateTo = (path: string) => {
-    window.location.hash = path;
-    setPathname(path);
-  };
-
-  useEffect(() => {
-    const handleHashChange = () => {
-      setPathname(window.location.hash.slice(1) || '/');
-    };
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
-
   useEffect(() => {
     async function loadData() {
       try {
         setLoading(true);
         setError('');
-        const localData = localStorage.getItem('sheetData');
-
-        if (localData) {
-          const rawData = JSON.parse(localData);
-          processRawData(rawData);
-          const localDate = localStorage.getItem('sheetUpdatedDate');
-          if (localDate) {
-            setUpdateStatus({ status: 'up-to-date', date: localDate });
+        setUpdateStatus('Checking for database updates...');
+        
+        let serverDate = '';
+        try {
+          const res1 = await fetch('/api/sheet/updated');
+          const data1 = await res1.json();
+          if (res1.ok && !data1.error) {
+            serverDate = data1.updatedDate;
           }
-        } else if (!isUpdatePage) {
-          setError('no-database');
+        } catch (e) {
+          console.warn('Could not retrieve remote database update date:', e);
         }
-      } catch (err) {
+
+        const localDate = localStorage.getItem('sheetUpdatedDate');
+        const cached = localStorage.getItem('sheetData');
+        
+        let rawData;
+        if (serverDate && localDate === serverDate && cached) {
+          try {
+            rawData = JSON.parse(cached);
+            setUpdateStatus('Database is up-to-date.');
+          } catch (e) {
+            console.error('Error parsing cached data, refetching...', e);
+          }
+        }
+        
+        if (!rawData) {
+          setUpdateStatus('Downloading latest card data...');
+          const res2 = await fetch('/api/sheet/data');
+          const data2 = await res2.json();
+          if (!res2.ok || data2.error) {
+            throw new Error(data2.error || 'Failed to fetch latest database.');
+          }
+          rawData = data2.values;
+          if (rawData && rawData.length > 0) {
+            localStorage.setItem('sheetUpdatedDate', serverDate || new Date().toLocaleDateString());
+            localStorage.setItem('sheetData', JSON.stringify(rawData));
+            setUpdateStatus('Database successfully updated.');
+          } else if (cached) {
+            rawData = JSON.parse(cached);
+            setUpdateStatus('Using offline cached database.');
+          }
+        }
+
+        if (rawData && rawData.length > 0) {
+          processRawData(rawData);
+        } else {
+          setError('No card data available. Please check network connection.');
+        }
+      } catch (err: any) {
         console.error(err);
-        setError('failed-loading');
+        const cached = localStorage.getItem('sheetData');
+        if (cached) {
+          try {
+            processRawData(JSON.parse(cached));
+            setUpdateStatus('Offline mode: Using cached database.');
+          } catch (e) {
+            setError('Failed to load local database.');
+          }
+        } else {
+          setError(err.message || 'Failed to sync card data from Google Sheets.');
+        }
       } finally {
         setLoading(false);
       }
     }
     loadData();
-  }, [pathname]);
+  }, []);
 
   function processRawData(rawData: any) {
     const newCards: Card[] = [];
     let idCounter = 1;
-
+    
     const nStrs = rawData.map((r: any) => r[0]).filter(Boolean);
     const oStrs = rawData.map((r: any) => r[1]).filter(Boolean);
     const pStrs = rawData.map((r: any) => r[2]).filter(Boolean);
@@ -106,7 +129,7 @@ export default function App() {
       const card = parseCard(str, idCounter++, false);
       if (card) newCards.push(card);
     }
-
+    
     for (const str of oStrs) {
       const card = parseCard(str, idCounter++, true);
       if (card) newCards.push(card);
@@ -114,7 +137,7 @@ export default function App() {
 
     parsePData(pStrs, newCards);
     setCards(newCards);
-
+    
     // Load deck from local storage if exists
     const savedDeck = localStorage.getItem('savedDeck');
     if (savedDeck) {
@@ -123,44 +146,32 @@ export default function App() {
   }
 
   const handleForceUpdate = async () => {
-    if (!apiKeyInput.trim()) {
-      setUpdateStatus({ status: 'error', msg: 'Please enter a Google Sheets API Key.' });
-      return;
-    }
     try {
       setLoading(true);
-      setUpdateStatus({ status: 'checking' });
-      localStorage.setItem('google_sheets_api_key', apiKeyInput.trim());
-
-      const res1 = await fetch(`/api/sheet/updated?key=${encodeURIComponent(apiKeyInput.trim())}`);
+      setError('');
+      setUpdateStatus('Force-updating database...');
+      
+      const res1 = await fetch('/api/sheet/updated');
       const data1 = await res1.json();
-
-      if (!res1.ok || data1.error) {
-        throw new Error(data1.error?.message || data1.error || 'Failed to fetch update metadata.');
-      }
-
       const serverDate = data1.updatedDate || new Date().toLocaleDateString();
 
-      setUpdateStatus({ status: 'updating' });
-      const res2 = await fetch(`/api/sheet/data?key=${encodeURIComponent(apiKeyInput.trim())}`);
+      const res2 = await fetch('/api/sheet/data');
       const data2 = await res2.json();
-
       if (!res2.ok || data2.error) {
-        throw new Error(data2.error?.message || data2.error || 'Failed to fetch sheet data.');
+        throw new Error(data2.error || 'Failed to force fetch data.');
       }
-
       const rawData = data2.values;
-      if (!rawData || !Array.isArray(rawData) || rawData.length === 0) {
-        throw new Error('No data found in NewDataBase sheet.');
+      if (!rawData || rawData.length === 0) {
+        throw new Error('Fetched card data is empty.');
       }
-
+      
       localStorage.setItem('sheetUpdatedDate', serverDate);
       localStorage.setItem('sheetData', JSON.stringify(rawData));
       processRawData(rawData);
-      setUpdateStatus({ status: 'updated', date: serverDate });
+      setUpdateStatus('Force update completed successfully.');
     } catch (err: any) {
       console.error(err);
-      setUpdateStatus({ status: 'error', msg: err.message || 'Update failed.' });
+      setError(err.message || 'Force update failed.');
     } finally {
       setLoading(false);
     }
@@ -186,7 +197,7 @@ export default function App() {
 
   const filteredCards = useMemo(() => {
     let result = cards;
-
+    
     if (viewTab === 'deck') {
       result = result.filter(c => deck[c.id] > 0);
     }
@@ -197,8 +208,8 @@ export default function App() {
 
     if (search.trim()) {
       const s = search.toLowerCase();
-      result = result.filter(c =>
-        c.name.toLowerCase().includes(s) ||
+      result = result.filter(c => 
+        c.name.toLowerCase().includes(s) || 
         c.effect.toLowerCase().includes(s)
       );
     }
@@ -246,105 +257,26 @@ export default function App() {
     }
   };
 
-  if (loading && !isUpdatePage) {
-    return <div className="flex h-screen items-center justify-center bg-zinc-950 text-white"><div className="animate-pulse text-lg">Loading database...</div></div>;
-  }
-
-  // No database view for Homepage
-  if (error === 'no-database' && !isUpdatePage) {
+  if (loading) {
     return (
-      <div className="flex flex-col h-screen items-center justify-center bg-zinc-950 text-zinc-100 p-8 text-center max-w-md mx-auto">
-        <Layers className="w-16 h-16 text-zinc-600 mb-4 animate-bounce" />
-        <h2 className="text-xl font-bold mb-2 text-white">No Database Loaded</h2>
-        <p className="text-sm text-zinc-400 mb-6 leading-relaxed">
-          The local card database is currently empty. Please access the update page to download the latest game data.
-        </p>
-        <button
-          onClick={() => navigateTo('/update')}
-          className="px-5 py-2.5 bg-zinc-200 text-zinc-950 hover:bg-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
-        >
-          Go to /update
-        </button>
+      <div className="flex flex-col h-screen items-center justify-center bg-zinc-950 text-white gap-3">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
+        <div className="text-sm text-zinc-400 font-mono animate-pulse">{updateStatus}</div>
       </div>
     );
   }
 
-  if (error && !isUpdatePage) {
+  if (error) {
     return (
       <div className="flex flex-col h-screen items-center justify-center bg-zinc-950 text-red-400 p-8 text-center max-w-md mx-auto">
-        <p className="mb-4">{error === 'failed-loading' ? 'Failed to read locally stored card database.' : error}</p>
-        <button onClick={() => navigateTo('/update')} className="px-4 py-2 bg-zinc-800 text-white rounded hover:bg-zinc-700 text-sm">Go to Update Page</button>
-      </div>
-    );
-  }
-
-  // Render the Update control page
-  if (isUpdatePage) {
-    return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-6">
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 max-w-lg w-full shadow-2xl">
-          <h1 className="text-2xl font-bold mb-2 text-white flex items-center gap-2">
-            <Layers className="text-zinc-400" /> Card Database Update
-          </h1>
-          <p className="text-sm text-zinc-400 mb-6">
-            Synchronizes your local deck-building database with the latest Google Sheet release.
-          </p>
-
-          <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-5 mb-6 space-y-3">
-            <div className="flex justify-between items-center text-sm">
-              <span className="text-zinc-500">Local DB Status</span>
-              <span className="font-medium text-white">{localStorage.getItem('sheetData') ? 'Loaded' : 'Empty'}</span>
-            </div>
-            <div className="flex justify-between items-center text-sm">
-              <span className="text-zinc-500">Local Version (Date)</span>
-              <span className="font-mono text-zinc-300">{localStorage.getItem('sheetUpdatedDate') || 'None'}</span>
-            </div>
-
-            <div className="border-t border-zinc-800/80 pt-3 flex flex-col gap-1.5">
-              <div className="text-xs text-zinc-500 font-medium uppercase tracking-wider">Update Progress</div>
-              <div className="text-sm font-medium">
-                {updateStatus.status === 'idle' && <span className="text-zinc-500">Enter API Key below to start.</span>}
-                {updateStatus.status === 'checking' && <span className="text-blue-400 animate-pulse">Checking remote version...</span>}
-                {updateStatus.status === 'updating' && <span className="text-amber-400 animate-pulse">Fetching NewDataBase columns N:P...</span>}
-                {updateStatus.status === 'up-to-date' && <span className="text-green-400">✓ Up to date (v{updateStatus.date})</span>}
-                {updateStatus.status === 'updated' && <span className="text-green-400">✓ Updated successfully to {updateStatus.date}!</span>}
-                {updateStatus.status === 'error' && <span className="text-red-400">Error: {updateStatus.msg}</span>}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-1.5 mb-6">
-            <label className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-              Google Sheets API Key
-            </label>
-            <input
-              type="password"
-              placeholder="Paste your API Key here..."
-              value={apiKeyInput}
-              onChange={e => setApiKeyInput(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-800 text-sm rounded-lg px-3.5 py-2.5 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 font-mono transition-colors"
-            />
-            <p className="text-[11px] text-zinc-500 leading-normal">
-              Your API key is used to authenticate with the Google Sheets API proxy and is saved only locally in your browser.
-            </p>
-          </div>
-
-          <div className="flex flex-col sm:flex-row gap-3">
-            <button
-              onClick={() => navigateTo('/')}
-              className="flex-1 py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer"
-            >
-              Return Home
-            </button>
-            <button
-              onClick={handleForceUpdate}
-              disabled={loading}
-              className="flex-1 py-2.5 px-4 bg-zinc-200 hover:bg-white disabled:opacity-50 text-zinc-950 text-sm font-semibold rounded-lg transition-colors cursor-pointer"
-            >
-              {loading ? 'Processing...' : 'Perform Update'}
-            </button>
-          </div>
-        </div>
+        <h2 className="text-xl font-bold mb-2 text-white">Database Synchronisation Failed</h2>
+        <p className="mb-6 text-sm text-zinc-400 leading-relaxed">{error}</p>
+        <button 
+          onClick={() => window.location.reload()} 
+          className="px-5 py-2.5 bg-zinc-800 text-white hover:bg-zinc-700 text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+        >
+          Retry Synchronisation
+        </button>
       </div>
     );
   }
@@ -353,21 +285,31 @@ export default function App() {
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans flex flex-col md:flex-row">
       {/* Sidebar Controls */}
       <div className="w-full md:w-80 bg-zinc-900 border-r border-zinc-800 p-4 flex flex-col gap-6 h-screen sticky top-0 overflow-y-auto shrink-0">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight mb-1 text-white">Deck Builder</h1>
-          <p className="text-xs text-zinc-400">
-            Total Cards: <span className={deckSize > 40 ? "text-red-500 font-semibold" : "text-zinc-100"}>{deckSize}</span> / 40
-          </p>
+        <div className="flex justify-between items-start">
+          <div>
+            <h1 className="text-xl font-bold tracking-tight mb-1 text-white">Deck Builder</h1>
+            <p className="text-xs text-zinc-400">
+              Total Cards: <span className={deckSize > 40 ? "text-red-500 font-semibold" : "text-zinc-100"}>{deckSize}</span> / 40
+            </p>
+          </div>
+          <button 
+            onClick={handleForceUpdate}
+            title="Force refresh database from Google Sheet"
+            className="p-1.5 bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 rounded-md border border-zinc-800 transition-colors cursor-pointer text-xs flex items-center gap-1"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Sync</span>
+          </button>
         </div>
 
         <div className="flex gap-2 p-1 bg-zinc-950 rounded-lg">
-          <button
+          <button 
             onClick={() => setViewTab('all')}
             className={cn("flex-1 text-sm py-1.5 rounded-md transition-colors cursor-pointer", viewTab === 'all' ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white")}
           >
             Database
           </button>
-          <button
+          <button 
             onClick={() => setViewTab('deck')}
             className={cn("flex-1 text-sm py-1.5 rounded-md transition-colors cursor-pointer", viewTab === 'deck' ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white")}
           >
@@ -378,9 +320,9 @@ export default function App() {
         <div className="space-y-4">
           <div className="relative">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
-            <input
-              type="text"
-              placeholder="Search name or effect..."
+            <input 
+              type="text" 
+              placeholder="Search name or effect..." 
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 pl-9 pr-3 text-sm focus:outline-none focus:border-zinc-600 transition-colors"
@@ -389,8 +331,8 @@ export default function App() {
 
           <div className="flex flex-col gap-2">
             <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1"><Filter className="w-3 h-3"/> Filter Type</label>
-            <select
-              value={typeFilter}
+            <select 
+              value={typeFilter} 
               onChange={e => setTypeFilter(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 px-3 text-sm focus:outline-none focus:border-zinc-600"
             >
@@ -400,8 +342,8 @@ export default function App() {
 
           <div className="flex flex-col gap-2">
             <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1"><ArrowUpDown className="w-3 h-3"/> Sort By</label>
-            <select
-              value={sortField}
+            <select 
+              value={sortField} 
               onChange={e => setSortField(e.target.value as any)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 px-3 text-sm focus:outline-none focus:border-zinc-600"
             >
@@ -415,11 +357,11 @@ export default function App() {
             <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1 justify-between">
               Grid Columns ({gridCols})
             </label>
-            <input
-              type="range"
-              min="5"
-              max="10"
-              value={gridCols}
+            <input 
+              type="range" 
+              min="5" 
+              max="10" 
+              value={gridCols} 
               onChange={e => setGridCols(parseInt(e.target.value))}
               className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-zinc-400"
             />
@@ -429,13 +371,13 @@ export default function App() {
         <div className="mt-auto pt-6 border-t border-zinc-800">
           <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Deck Code</div>
           <div className="flex gap-2 mb-2">
-            <input
-              type="text"
-              readOnly
+            <input 
+              type="text" 
+              readOnly 
               value={encodeDeck(deck)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-1.5 px-3 text-sm text-zinc-300 focus:outline-none font-mono"
             />
-            <button
+            <button 
               onClick={() => navigator.clipboard.writeText(encodeDeck(deck))}
               className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors cursor-pointer"
               title="Copy to clipboard"
@@ -444,14 +386,14 @@ export default function App() {
             </button>
           </div>
           <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Paste code..."
+            <input 
+              type="text" 
+              placeholder="Paste code..." 
               value={deckCodeInput}
               onChange={e => setDeckCodeInput(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-1.5 px-3 text-sm text-zinc-300 focus:outline-none font-mono"
             />
-            <button
+            <button 
               onClick={handleImport}
               className="px-3 py-1.5 bg-zinc-200 text-zinc-950 hover:bg-white text-sm font-medium rounded-md transition-colors cursor-pointer"
             >
@@ -461,7 +403,7 @@ export default function App() {
 
           {confirmClear ? (
             <div className="flex gap-2 mt-2">
-              <button
+              <button 
                 onClick={() => {
                   setDeck({});
                   setConfirmClear(false);
@@ -470,7 +412,7 @@ export default function App() {
               >
                 Yes, Clear
               </button>
-              <button
+              <button 
                 onClick={() => setConfirmClear(false)}
                 className="flex-1 py-1.5 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 text-sm font-medium rounded-md transition-colors cursor-pointer"
               >
@@ -478,7 +420,7 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <button
+            <button 
               onClick={() => setConfirmClear(true)}
               className="w-full mt-2 py-1.5 bg-red-950/30 text-red-400 hover:bg-red-950/50 border border-red-900/50 text-sm font-medium rounded-md transition-colors cursor-pointer"
             >
@@ -493,7 +435,7 @@ export default function App() {
         <div className={cn("grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4", gridColsClasses[gridCols])}>
           {filteredCards.map(card => (
             <div key={card.id} className="group relative bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 hover:border-zinc-600 transition-colors flex flex-col">
-              <div
+              <div 
                 className="aspect-[2/3] bg-zinc-950 w-full relative cursor-pointer"
                 onClick={() => setSelectedCard(card)}
               >
@@ -508,14 +450,14 @@ export default function App() {
                   </div>
                 )}
               </div>
-
+              
               <div className="p-3 flex flex-col flex-1">
                 <h3 className="font-medium text-sm leading-tight mb-1 truncate" title={card.name}>{card.name}</h3>
                 <div className="text-[10px] text-zinc-500 mb-2 truncate">{card.type} • {card.group}</div>
-
+                
                 {!card.isToken && (
                   <div className="mt-auto flex items-center justify-between border-t border-zinc-800 pt-2">
-                    <button
+                    <button 
                       onClick={() => removeFromDeck(card)}
                       disabled={!deck[card.id]}
                       className="p-1 text-zinc-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 rounded transition-colors cursor-pointer"
@@ -531,7 +473,7 @@ export default function App() {
                     )}>
                       {deck[card.id] || 0}
                     </div>
-                    <button
+                    <button 
                       onClick={() => addToDeck(card)}
                       disabled={(deck[card.id] || 0) >= 3}
                       className="p-1 text-zinc-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 rounded transition-colors cursor-pointer"
@@ -553,10 +495,10 @@ export default function App() {
 
       {/* Card Details Modal */}
       {selectedCard && (
-        <CardModal
-          card={selectedCard}
-          cards={cards}
-          onClose={() => setSelectedCard(null)}
+        <CardModal 
+          card={selectedCard} 
+          cards={cards} 
+          onClose={() => setSelectedCard(null)} 
           onNavigate={(c) => setSelectedCard(c)}
         />
       )}
@@ -568,13 +510,13 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
   // Find recursive target cards for the current card
   const targetCards = useMemo(() => {
     if (!card.targets || card.targets.length === 0) return [];
-
+    
     const seen = new Set<string>();
     seen.add(card.name);
-
+    
     const result: Card[] = [];
     const queue = [...card.targets];
-
+    
     while (queue.length > 0) {
       const currentName = queue.shift()!;
       if (!seen.has(currentName)) {
@@ -594,7 +536,7 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden w-full max-w-4xl max-h-[90vh] flex flex-col md:flex-row shadow-2xl" onClick={e => e.stopPropagation()}>
-
+        
         {/* Image Section */}
         <div className="w-full md:w-1/2 bg-zinc-950 p-6 flex items-center justify-center">
           <div className="relative w-full max-w-sm aspect-[2/3] rounded-lg overflow-hidden shadow-xl border border-zinc-800">
@@ -652,7 +594,7 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
               <h3 className="text-sm font-medium text-white mb-3">Related Cards</h3>
               <div className="flex gap-3 overflow-x-auto pb-2">
                 {targetCards.map(tc => (
-                  <button
+                  <button 
                     key={tc.id}
                     onClick={() => onNavigate(tc)}
                     className="flex-shrink-0 w-24 group"

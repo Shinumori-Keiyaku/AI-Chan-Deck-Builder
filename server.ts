@@ -13,10 +13,7 @@ async function startServer() {
   // Proxy for fetching P1 (Last Updated Date)
   app.get('/api/sheet/updated', async (req, res) => {
     try {
-      const apiKey = req.query.key || req.headers['x-api-key'] || process.env.GOOGLE_SHEETS_API_KEY;
-      if (!apiKey) {
-        return res.status(400).json({ error: 'Google Sheets API Key is required' });
-      }
+      const apiKey = 'AIzaSyBasQBsecNqcPTHe3OjmC6QP67EyWtl5Hg';
 
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!P1?key=${apiKey}`;
       const response = await fetch(url);
@@ -36,10 +33,7 @@ async function startServer() {
   // Proxy for fetching N:P (All Data)
   app.get('/api/sheet/data', async (req, res) => {
     try {
-      const apiKey = req.query.key || req.headers['x-api-key'] || process.env.GOOGLE_SHEETS_API_KEY;
-      if (!apiKey) {
-        return res.status(400).json({ error: 'Google Sheets API Key is required' });
-      }
+      const apiKey = 'AIzaSyBasQBsecNqcPTHe3OjmC6QP67EyWtl5Hg';
 
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!N:P?key=${apiKey}`;
       const response = await fetch(url);
