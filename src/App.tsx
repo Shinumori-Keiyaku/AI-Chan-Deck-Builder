@@ -298,14 +298,6 @@ export default function App() {
               Total Cards: <span className={deckSize > 40 ? "text-red-500 font-semibold" : "text-zinc-100"}>{deckSize}</span> / 40
             </p>
           </div>
-          <button 
-            onClick={handleForceUpdate}
-            title="Force refresh database from Google Sheet"
-            className="p-1.5 bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 rounded-md border border-zinc-800 transition-colors cursor-pointer text-xs flex items-center gap-1"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Sync</span>
-          </button>
         </div>
 
         <div className="flex gap-2 p-1 bg-zinc-950 rounded-lg">
@@ -541,13 +533,13 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden w-full max-w-4xl max-h-[90vh] flex flex-col md:flex-row shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden w-full max-w-6xl md:h-[85vh] max-h-[95vh] flex flex-col md:flex-row shadow-2xl" onClick={e => e.stopPropagation()}>
         
         {/* Image Section */}
-        <div className="w-full md:w-1/2 bg-zinc-950 p-6 flex items-center justify-center">
-          <div className="relative w-full max-w-sm aspect-[2/3] rounded-lg overflow-hidden shadow-xl border border-zinc-800">
+        <div className="w-full md:w-1/2 bg-zinc-950 p-6 flex items-center justify-center h-[45vh] md:h-full">
+          <div className="relative w-full h-full max-w-lg rounded-lg overflow-hidden shadow-2xl border border-zinc-800/50 bg-zinc-900/40 flex items-center justify-center">
              {card.imageUrl ? (
-                <img src={card.imageUrl} alt={card.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                <img src={card.imageUrl} alt={card.name} referrerPolicy="no-referrer" className="w-full h-full object-contain" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-zinc-700">No Image</div>
               )}
@@ -555,7 +547,7 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
         </div>
 
         {/* Details Section */}
-        <div className="w-full md:w-1/2 p-6 overflow-y-auto flex flex-col">
+        <div className="w-full md:w-1/2 p-8 overflow-y-auto flex flex-col h-[50vh] md:h-full">
           <div className="flex justify-between items-start mb-4">
             <div>
               <div className="flex items-center gap-2 mb-1">
