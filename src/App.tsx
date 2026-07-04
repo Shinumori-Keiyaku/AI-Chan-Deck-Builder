@@ -13,14 +13,14 @@ export default function App() {
   const [deck, setDeck] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  
+
   // Custom router state
-  const [pathname, setPathname] = useState(window.location.pathname);
+  const [pathname, setPathname] = useState(window.location.hash.slice(1) || '/');
   const isUpdatePage = pathname === '/update';
-  
+
   // API Key state for manually updating
   const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem('google_sheets_api_key') || '');
-  
+
   // Database Update state
   const [updateStatus, setUpdateStatus] = useState<{
     status: 'idle' | 'checking' | 'updating' | 'updated' | 'up-to-date' | 'error';
@@ -36,12 +36,12 @@ export default function App() {
   const [typeFilter, setTypeFilter] = useState('All');
   const [sortField, setSortField] = useState<'id' | 'name' | 'group' | 'type'>('id');
   const [viewTab, setViewTab] = useState<'all' | 'deck'>('all');
-  
+
   const [gridCols, setGridCols] = useState(7);
-  
+
   // Card Details Modal
   const [selectedCard, setSelectedCard] = useState<Card | null>(null);
-  
+
   // Deck Code
   const [deckCodeInput, setDeckCodeInput] = useState('');
 
@@ -55,16 +55,16 @@ export default function App() {
   };
 
   const navigateTo = (path: string) => {
-    window.history.pushState({}, '', path);
+    window.location.hash = path;
     setPathname(path);
   };
 
   useEffect(() => {
-    const handlePopState = () => {
-      setPathname(window.location.pathname);
+    const handleHashChange = () => {
+      setPathname(window.location.hash.slice(1) || '/');
     };
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   useEffect(() => {
@@ -73,7 +73,7 @@ export default function App() {
         setLoading(true);
         setError('');
         const localData = localStorage.getItem('sheetData');
-        
+
         if (localData) {
           const rawData = JSON.parse(localData);
           processRawData(rawData);
@@ -97,7 +97,7 @@ export default function App() {
   function processRawData(rawData: any) {
     const newCards: Card[] = [];
     let idCounter = 1;
-    
+
     const nStrs = rawData.map((r: any) => r[0]).filter(Boolean);
     const oStrs = rawData.map((r: any) => r[1]).filter(Boolean);
     const pStrs = rawData.map((r: any) => r[2]).filter(Boolean);
@@ -106,7 +106,7 @@ export default function App() {
       const card = parseCard(str, idCounter++, false);
       if (card) newCards.push(card);
     }
-    
+
     for (const str of oStrs) {
       const card = parseCard(str, idCounter++, true);
       if (card) newCards.push(card);
@@ -114,7 +114,7 @@ export default function App() {
 
     parsePData(pStrs, newCards);
     setCards(newCards);
-    
+
     // Load deck from local storage if exists
     const savedDeck = localStorage.getItem('savedDeck');
     if (savedDeck) {
@@ -134,26 +134,26 @@ export default function App() {
 
       const res1 = await fetch(`/api/sheet/updated?key=${encodeURIComponent(apiKeyInput.trim())}`);
       const data1 = await res1.json();
-      
+
       if (!res1.ok || data1.error) {
         throw new Error(data1.error?.message || data1.error || 'Failed to fetch update metadata.');
       }
-      
+
       const serverDate = data1.updatedDate || new Date().toLocaleDateString();
 
       setUpdateStatus({ status: 'updating' });
       const res2 = await fetch(`/api/sheet/data?key=${encodeURIComponent(apiKeyInput.trim())}`);
       const data2 = await res2.json();
-      
+
       if (!res2.ok || data2.error) {
         throw new Error(data2.error?.message || data2.error || 'Failed to fetch sheet data.');
       }
-      
+
       const rawData = data2.values;
       if (!rawData || !Array.isArray(rawData) || rawData.length === 0) {
         throw new Error('No data found in NewDataBase sheet.');
       }
-      
+
       localStorage.setItem('sheetUpdatedDate', serverDate);
       localStorage.setItem('sheetData', JSON.stringify(rawData));
       processRawData(rawData);
@@ -186,7 +186,7 @@ export default function App() {
 
   const filteredCards = useMemo(() => {
     let result = cards;
-    
+
     if (viewTab === 'deck') {
       result = result.filter(c => deck[c.id] > 0);
     }
@@ -197,8 +197,8 @@ export default function App() {
 
     if (search.trim()) {
       const s = search.toLowerCase();
-      result = result.filter(c => 
-        c.name.toLowerCase().includes(s) || 
+      result = result.filter(c =>
+        c.name.toLowerCase().includes(s) ||
         c.effect.toLowerCase().includes(s)
       );
     }
@@ -259,7 +259,7 @@ export default function App() {
         <p className="text-sm text-zinc-400 mb-6 leading-relaxed">
           The local card database is currently empty. Please access the update page to download the latest game data.
         </p>
-        <button 
+        <button
           onClick={() => navigateTo('/update')}
           className="px-5 py-2.5 bg-zinc-200 text-zinc-950 hover:bg-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
         >
@@ -317,7 +317,7 @@ export default function App() {
             <label className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
               Google Sheets API Key
             </label>
-            <input 
+            <input
               type="password"
               placeholder="Paste your API Key here..."
               value={apiKeyInput}
@@ -361,13 +361,13 @@ export default function App() {
         </div>
 
         <div className="flex gap-2 p-1 bg-zinc-950 rounded-lg">
-          <button 
+          <button
             onClick={() => setViewTab('all')}
             className={cn("flex-1 text-sm py-1.5 rounded-md transition-colors cursor-pointer", viewTab === 'all' ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white")}
           >
             Database
           </button>
-          <button 
+          <button
             onClick={() => setViewTab('deck')}
             className={cn("flex-1 text-sm py-1.5 rounded-md transition-colors cursor-pointer", viewTab === 'deck' ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white")}
           >
@@ -378,9 +378,9 @@ export default function App() {
         <div className="space-y-4">
           <div className="relative">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
-            <input 
-              type="text" 
-              placeholder="Search name or effect..." 
+            <input
+              type="text"
+              placeholder="Search name or effect..."
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 pl-9 pr-3 text-sm focus:outline-none focus:border-zinc-600 transition-colors"
@@ -389,8 +389,8 @@ export default function App() {
 
           <div className="flex flex-col gap-2">
             <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1"><Filter className="w-3 h-3"/> Filter Type</label>
-            <select 
-              value={typeFilter} 
+            <select
+              value={typeFilter}
               onChange={e => setTypeFilter(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 px-3 text-sm focus:outline-none focus:border-zinc-600"
             >
@@ -400,8 +400,8 @@ export default function App() {
 
           <div className="flex flex-col gap-2">
             <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1"><ArrowUpDown className="w-3 h-3"/> Sort By</label>
-            <select 
-              value={sortField} 
+            <select
+              value={sortField}
               onChange={e => setSortField(e.target.value as any)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 px-3 text-sm focus:outline-none focus:border-zinc-600"
             >
@@ -415,11 +415,11 @@ export default function App() {
             <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1 justify-between">
               Grid Columns ({gridCols})
             </label>
-            <input 
-              type="range" 
-              min="5" 
-              max="10" 
-              value={gridCols} 
+            <input
+              type="range"
+              min="5"
+              max="10"
+              value={gridCols}
               onChange={e => setGridCols(parseInt(e.target.value))}
               className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-zinc-400"
             />
@@ -429,13 +429,13 @@ export default function App() {
         <div className="mt-auto pt-6 border-t border-zinc-800">
           <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Deck Code</div>
           <div className="flex gap-2 mb-2">
-            <input 
-              type="text" 
-              readOnly 
+            <input
+              type="text"
+              readOnly
               value={encodeDeck(deck)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-1.5 px-3 text-sm text-zinc-300 focus:outline-none font-mono"
             />
-            <button 
+            <button
               onClick={() => navigator.clipboard.writeText(encodeDeck(deck))}
               className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors cursor-pointer"
               title="Copy to clipboard"
@@ -444,14 +444,14 @@ export default function App() {
             </button>
           </div>
           <div className="flex gap-2">
-            <input 
-              type="text" 
-              placeholder="Paste code..." 
+            <input
+              type="text"
+              placeholder="Paste code..."
               value={deckCodeInput}
               onChange={e => setDeckCodeInput(e.target.value)}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-1.5 px-3 text-sm text-zinc-300 focus:outline-none font-mono"
             />
-            <button 
+            <button
               onClick={handleImport}
               className="px-3 py-1.5 bg-zinc-200 text-zinc-950 hover:bg-white text-sm font-medium rounded-md transition-colors cursor-pointer"
             >
@@ -461,7 +461,7 @@ export default function App() {
 
           {confirmClear ? (
             <div className="flex gap-2 mt-2">
-              <button 
+              <button
                 onClick={() => {
                   setDeck({});
                   setConfirmClear(false);
@@ -470,7 +470,7 @@ export default function App() {
               >
                 Yes, Clear
               </button>
-              <button 
+              <button
                 onClick={() => setConfirmClear(false)}
                 className="flex-1 py-1.5 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 text-sm font-medium rounded-md transition-colors cursor-pointer"
               >
@@ -478,7 +478,7 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <button 
+            <button
               onClick={() => setConfirmClear(true)}
               className="w-full mt-2 py-1.5 bg-red-950/30 text-red-400 hover:bg-red-950/50 border border-red-900/50 text-sm font-medium rounded-md transition-colors cursor-pointer"
             >
@@ -493,7 +493,7 @@ export default function App() {
         <div className={cn("grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4", gridColsClasses[gridCols])}>
           {filteredCards.map(card => (
             <div key={card.id} className="group relative bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 hover:border-zinc-600 transition-colors flex flex-col">
-              <div 
+              <div
                 className="aspect-[2/3] bg-zinc-950 w-full relative cursor-pointer"
                 onClick={() => setSelectedCard(card)}
               >
@@ -508,14 +508,14 @@ export default function App() {
                   </div>
                 )}
               </div>
-              
+
               <div className="p-3 flex flex-col flex-1">
                 <h3 className="font-medium text-sm leading-tight mb-1 truncate" title={card.name}>{card.name}</h3>
                 <div className="text-[10px] text-zinc-500 mb-2 truncate">{card.type} • {card.group}</div>
-                
+
                 {!card.isToken && (
                   <div className="mt-auto flex items-center justify-between border-t border-zinc-800 pt-2">
-                    <button 
+                    <button
                       onClick={() => removeFromDeck(card)}
                       disabled={!deck[card.id]}
                       className="p-1 text-zinc-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 rounded transition-colors cursor-pointer"
@@ -531,7 +531,7 @@ export default function App() {
                     )}>
                       {deck[card.id] || 0}
                     </div>
-                    <button 
+                    <button
                       onClick={() => addToDeck(card)}
                       disabled={(deck[card.id] || 0) >= 3}
                       className="p-1 text-zinc-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 rounded transition-colors cursor-pointer"
@@ -553,10 +553,10 @@ export default function App() {
 
       {/* Card Details Modal */}
       {selectedCard && (
-        <CardModal 
-          card={selectedCard} 
-          cards={cards} 
-          onClose={() => setSelectedCard(null)} 
+        <CardModal
+          card={selectedCard}
+          cards={cards}
+          onClose={() => setSelectedCard(null)}
           onNavigate={(c) => setSelectedCard(c)}
         />
       )}
@@ -568,13 +568,13 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
   // Find recursive target cards for the current card
   const targetCards = useMemo(() => {
     if (!card.targets || card.targets.length === 0) return [];
-    
+
     const seen = new Set<string>();
     seen.add(card.name);
-    
+
     const result: Card[] = [];
     const queue = [...card.targets];
-    
+
     while (queue.length > 0) {
       const currentName = queue.shift()!;
       if (!seen.has(currentName)) {
@@ -594,7 +594,7 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden w-full max-w-4xl max-h-[90vh] flex flex-col md:flex-row shadow-2xl" onClick={e => e.stopPropagation()}>
-        
+
         {/* Image Section */}
         <div className="w-full md:w-1/2 bg-zinc-950 p-6 flex items-center justify-center">
           <div className="relative w-full max-w-sm aspect-[2/3] rounded-lg overflow-hidden shadow-xl border border-zinc-800">
@@ -652,7 +652,7 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
               <h3 className="text-sm font-medium text-white mb-3">Related Cards</h3>
               <div className="flex gap-3 overflow-x-auto pb-2">
                 {targetCards.map(tc => (
-                  <button 
+                  <button
                     key={tc.id}
                     onClick={() => onNavigate(tc)}
                     className="flex-shrink-0 w-24 group"
@@ -671,4 +671,3 @@ function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Ca
     </div>
   );
 }
-
