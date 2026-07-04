@@ -145,20 +145,26 @@ export default function App() {
     }
   }
 
+  const SHEET_ID = '1TDHBWj79saP6by70vFLPOMoUwoLMxdX19eYfD6eJXSY';
+  const SHEETS_API_KEY = 'AIzaSyBasQBsecNqcPTHe3OjmC6QP67EyWtl5Hg';
+
   const handleForceUpdate = async () => {
     try {
       setLoading(true);
       setError('');
       setUpdateStatus('Force-updating database...');
-      
-      const res1 = await fetch('/api/sheet/updated');
-      const data1 = await res1.json();
-      const serverDate = data1.updatedDate || new Date().toLocaleDateString();
 
-      const res2 = await fetch('/api/sheet/data');
+      const res1 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!P1?key=${SHEETS_API_KEY}`);
+      const data1 = await res1.json();
+      if (data1.error) {
+        throw new Error(data1.error.message || 'Failed to fetch update metadata.');
+      }
+      const serverDate = data1.values?.[0]?.[0] || new Date().toLocaleDateString();
+
+      const res2 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!N:P?key=${SHEETS_API_KEY}`);
       const data2 = await res2.json();
-      if (!res2.ok || data2.error) {
-        throw new Error(data2.error || 'Failed to force fetch data.');
+      if (data2.error) {
+        throw new Error(data2.error.message || 'Failed to force fetch data.');
       }
       const rawData = data2.values;
       if (!rawData || rawData.length === 0) {
