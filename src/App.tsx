@@ -216,7 +216,8 @@ export default function App() {
       const s = search.toLowerCase();
       result = result.filter(c => 
         c.name.toLowerCase().includes(s) || 
-        c.effect.toLowerCase().includes(s)
+        c.effect.toLowerCase().includes(s) ||
+        (c.group && c.group.toLowerCase().includes(s))
       );
     }
 
