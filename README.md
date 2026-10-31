@@ -94,6 +94,23 @@ npm run preview
 
 The production build is written to `dist/`.
 
+## Deploy to GitHub Pages
+
+```bash
+npm run deploy
+```
+
+This runs the production build (`npm run build`) and publishes `dist/` to the
+`gh-pages` branch. The site is served at:
+
+```
+https://Shinumori-Keiyaku.github.io/AI-Chan-Deck-Builder/
+```
+
+`vite.config.ts` sets `base: '/AI-Chan-Deck-Builder/'` so the built assets are
+referenced under the repo subpath — required for project-site deployments on
+GitHub Pages. If you rename the repo, update the `base` value to match.
+
 ## Project structure
 
 ```text
