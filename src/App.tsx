@@ -1,614 +1,487 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
+import { ArrowUpRight, Layers, SearchX, Sparkles } from 'lucide-react';
+import type {
+  Card,
+  SortDirection,
+  SortKey,
+  StatCompare,
+  StatKey,
+  TabKey,
+} from './types';
+import { API_KEY, buildNameIndex, formatVersionLabel, searchTextForCard } from './lib/sheet';
+import { relativeTime } from './lib/format';
+import { useSheetData } from './hooks/useSheetData';
+import { useDeck } from './hooks/useDeck';
+import { Header } from './components/Header';
+import { Toolbar } from './components/Toolbar';
+import { CardTile } from './components/CardTile';
+import { DeckPanel } from './components/DeckPanel';
+import { DeckView } from './components/DeckView';
+import { CardDetail } from './components/CardDetail';
+import { DeckCodeDialog } from './components/DeckCodeDialog';
+import { ErrorState, LoadingState, OfflineBanner } from './components/DataState';
+import { Toast, type ToastMessage } from './components/Toast';
 
-import React, { useEffect, useState, useMemo } from 'react';
-import { Card, parseCard, parsePData, encodeDeck, decodeDeck } from './lib/deck';
-import { Search, Filter, ArrowUpDown, Layers, Plus, Minus, Info, X, Check, Copy } from 'lucide-react';
-import { cn } from './lib/utils';
+const TYPE_ORDER = ['unit', 'support', 'building', 'field'];
+const MAX_DECK_SIZE = 40;
+
+function cardKey(card: Card): string {
+  return `${card.isToken ? 't' : 'c'}-${card.id}`;
+}
+
+function typeRank(type: string): number {
+  const index = TYPE_ORDER.indexOf(type);
+  return index === -1 ? TYPE_ORDER.length : index;
+}
 
 export default function App() {
-  const [cards, setCards] = useState<Card[]>([]);
-  const [deck, setDeck] = useState<Record<number, number>>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  
-  // Database Update status state
-  const [updateStatus, setUpdateStatus] = useState<string>('');
+  const { data, status, error, lastChecked, updateNotice, refresh } = useSheetData();
+  const cards = useMemo(() => data?.cards ?? [], [data]);
+  const tokens = useMemo(() => data?.tokens ?? [], [data]);
+  const deck = useDeck(cards);
 
-  // Confirmation state for Clear Deck
-  const [confirmClear, setConfirmClear] = useState(false);
+  const [tab, setTab] = useState<TabKey>('builder');
+  const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [groupFilter, setGroupFilter] = useState('all');
+  const [statKey, setStatKey] = useState<StatKey | 'all'>('all');
+  const [statCompare, setStatCompare] = useState<StatCompare>('gt');
+  const [statValue, setStatValue] = useState('');
+  const [sort, setSort] = useState<SortKey>('id');
+  const [direction, setDirection] = useState<SortDirection>('asc');
+  const [gridColumns, setGridColumns] = useState(5);
+  const [selection, setSelection] = useState<{ current: string; root: string } | null>(null);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const toastTimer = useRef<number | null>(null);
 
-  // UI State
-  const [search, setSearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState('All');
-  const [sortField, setSortField] = useState<'id' | 'name' | 'group' | 'type'>('id');
-  const [viewTab, setViewTab] = useState<'all' | 'deck'>('all');
-  
-  const [gridCols, setGridCols] = useState(7);
-  
-  // Card Details Modal
-  const [selectedCard, setSelectedCard] = useState<Card | null>(null);
-  
-  // Deck Code
-  const [deckCodeInput, setDeckCodeInput] = useState('');
+  const allCards = useMemo(() => [...cards, ...tokens], [cards, tokens]);
+  const allCardsByKey = useMemo(
+    () => new Map(allCards.map((card) => [cardKey(card), card])),
+    [allCards],
+  );
+  const byName = useMemo(() => buildNameIndex(cards, tokens), [cards, tokens]);
+  const searchIndex = useMemo(
+    () => new Map(cards.map((card) => [card.id, searchTextForCard(card)])),
+    [cards],
+  );
 
-  const gridColsClasses: Record<number, string> = {
-    5: "xl:grid-cols-5",
-    6: "xl:grid-cols-6",
-    7: "xl:grid-cols-7",
-    8: "xl:grid-cols-8",
-    9: "xl:grid-cols-9",
-    10: "xl:grid-cols-10",
-  };
+  const types = useMemo(() => {
+    const unique = new Set(cards.map((card) => card.type));
+    return [...unique].sort((a, b) => {
+      const rank = typeRank(a) - typeRank(b);
+      return rank !== 0 ? rank : a.localeCompare(b);
+    });
+  }, [cards]);
 
-  const SHEET_ID = '1TDHBWj79saP6by70vFLPOMoUwoLMxdX19eYfD6eJXSY';
-  const SHEETS_API_KEY = 'AIzaSyBasQBsecNqcPTHe3OjmC6QP67EyWtl5Hg';
+  const groups = useMemo(
+    () => [...new Set(cards.map((card) => card.group))].sort((a, b) => a.localeCompare(b)),
+    [cards],
+  );
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        setLoading(true);
-        setError('');
-        setUpdateStatus('Checking for database updates...');
-        
-        let serverDate = '';
-        try {
-          const res1 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!P1?key=${SHEETS_API_KEY}`);
-          const data1 = await res1.json();
-          if (res1.ok && !data1.error) {
-            serverDate = data1.values?.[0]?.[0] || '';
-          }
-        } catch (e) {
-          console.warn('Could not retrieve remote database update date:', e);
-        }
-
-        const localDate = localStorage.getItem('sheetUpdatedDate');
-        const cached = localStorage.getItem('sheetData');
-        
-        let rawData;
-        if (serverDate && localDate === serverDate && cached) {
-          try {
-            rawData = JSON.parse(cached);
-            setUpdateStatus('Database is up-to-date.');
-          } catch (e) {
-            console.error('Error parsing cached data, refetching...', e);
-          }
-        }
-        
-        if (!rawData) {
-          setUpdateStatus('Downloading latest card data...');
-          const res2 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!N:P?key=${SHEETS_API_KEY}`);
-          const data2 = await res2.json();
-          if (!res2.ok || data2.error) {
-            throw new Error(data2.error?.message || data2.error || 'Failed to fetch latest database.');
-          }
-          rawData = data2.values;
-          if (rawData && rawData.length > 0) {
-            localStorage.setItem('sheetUpdatedDate', serverDate || new Date().toLocaleDateString());
-            localStorage.setItem('sheetData', JSON.stringify(rawData));
-            setUpdateStatus('Database successfully updated.');
-          } else if (cached) {
-            rawData = JSON.parse(cached);
-            setUpdateStatus('Using offline cached database.');
-          }
-        }
-
-        if (rawData && rawData.length > 0) {
-          processRawData(rawData);
-        } else {
-          setError('No card data available. Please check network connection.');
-        }
-      } catch (err: any) {
-        console.error(err);
-        const cached = localStorage.getItem('sheetData');
-        if (cached) {
-          try {
-            processRawData(JSON.parse(cached));
-            setUpdateStatus('Offline mode: Using cached database.');
-          } catch (e) {
-            setError('Failed to load local database.');
-          }
-        } else {
-          setError(err.message || 'Failed to sync card data from Google Sheets.');
-        }
-      } finally {
-        setLoading(false);
-      }
+  const typeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const card of cards) {
+      counts[card.type] = (counts[card.type] ?? 0) + 1;
     }
-    loadData();
-  }, []);
-
-  function processRawData(rawData: any) {
-    const newCards: Card[] = [];
-    let idCounter = 1;
-    
-    const nStrs = rawData.map((r: any) => r[0]).filter(Boolean);
-    const oStrs = rawData.map((r: any) => r[1]).filter(Boolean);
-    const pStrs = rawData.map((r: any) => r[2]).filter(Boolean);
-
-    for (const str of nStrs) {
-      const card = parseCard(str, idCounter++, false);
-      if (card) newCards.push(card);
-    }
-    
-    for (const str of oStrs) {
-      const card = parseCard(str, idCounter++, true);
-      if (card) newCards.push(card);
-    }
-
-    parsePData(pStrs, newCards);
-    setCards(newCards);
-    
-    // Load deck from local storage if exists
-    const savedDeck = localStorage.getItem('savedDeck');
-    if (savedDeck) {
-      setDeck(JSON.parse(savedDeck));
-    }
-  }
-
-  const handleForceUpdate = async () => {
-    try {
-      setLoading(true);
-      setError('');
-      setUpdateStatus('Force-updating database...');
-
-      const res1 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!P1?key=${SHEETS_API_KEY}`);
-      const data1 = await res1.json();
-      if (data1.error) {
-        throw new Error(data1.error.message || 'Failed to fetch update metadata.');
-      }
-      const serverDate = data1.values?.[0]?.[0] || new Date().toLocaleDateString();
-
-      const res2 = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/NewDataBase!N:P?key=${SHEETS_API_KEY}`);
-      const data2 = await res2.json();
-      if (data2.error) {
-        throw new Error(data2.error.message || 'Failed to force fetch data.');
-      }
-      const rawData = data2.values;
-      if (!rawData || rawData.length === 0) {
-        throw new Error('Fetched card data is empty.');
-      }
-      
-      localStorage.setItem('sheetUpdatedDate', serverDate);
-      localStorage.setItem('sheetData', JSON.stringify(rawData));
-      processRawData(rawData);
-      setUpdateStatus('Force update completed successfully.');
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || 'Force update failed.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Save deck changes
-  useEffect(() => {
-    if (Object.keys(deck).length > 0) {
-      localStorage.setItem('savedDeck', JSON.stringify(deck));
-    } else {
-      localStorage.removeItem('savedDeck');
-    }
-  }, [deck]);
-
-  const deckSize = useMemo(() => {
-    return (Object.values(deck) as number[]).reduce((sum, count) => sum + count, 0);
-  }, [deck]);
-
-  const cardTypes = useMemo(() => {
-    const types = new Set(cards.map(c => c.type));
-    return ['All', ...Array.from(types).filter(Boolean).sort()];
+    return counts;
   }, [cards]);
 
   const filteredCards = useMemo(() => {
-    let result = cards;
-    
-    if (viewTab === 'deck') {
-      result = result.filter(c => deck[c.id] > 0);
-    }
+    const normalizedQuery = deferredQuery.trim().toLowerCase();
+    const numericStat = Number(statValue);
+    const statActive = statKey !== 'all' && statValue.trim() !== '' && Number.isFinite(numericStat);
 
-    if (typeFilter !== 'All') {
-      result = result.filter(c => c.type === typeFilter);
-    }
+    const result = cards.filter((card) => {
+      if (typeFilter !== 'all' && card.type !== typeFilter) return false;
+      if (groupFilter !== 'all' && card.group !== groupFilter) return false;
+      if (normalizedQuery && !searchIndex.get(card.id)?.includes(normalizedQuery)) return false;
+      if (statActive) {
+        const cardStat =
+          statKey === 'hp'
+            ? card.hp
+            : statKey === 'atk'
+              ? card.atk
+              : statKey === 'cost'
+                ? card.normalCost
+                : card.goldCost;
+        if (statCompare === 'gt' ? cardStat <= numericStat : cardStat >= numericStat) return false;
+      }
+      return true;
+    });
 
-    if (search.trim()) {
-      const s = search.toLowerCase();
-      result = result.filter(c => 
-        c.name.toLowerCase().includes(s) || 
-        c.effect.toLowerCase().includes(s) ||
-        (c.group && c.group.toLowerCase().includes(s))
-      );
-    }
-
-    result = [...result].sort((a, b) => {
-      if (sortField === 'id') return a.id - b.id;
-      if (sortField === 'name') return a.name.localeCompare(b.name);
-      if (sortField === 'group') return a.group.localeCompare(b.group);
-      if (sortField === 'type') return a.type.localeCompare(b.type);
-      return 0;
+    result.sort((a, b) => {
+      let comparison = 0;
+      switch (sort) {
+        case 'name':
+          comparison = a.name.localeCompare(b.name);
+          break;
+        case 'group':
+          comparison = a.group.localeCompare(b.group);
+          break;
+        case 'type':
+          comparison = typeRank(a.type) - typeRank(b.type) || a.type.localeCompare(b.type);
+          break;
+        default:
+          comparison = a.id - b.id;
+      }
+      if (comparison === 0) comparison = a.id - b.id;
+      return direction === 'asc' ? comparison : -comparison;
     });
 
     return result;
-  }, [cards, search, typeFilter, sortField, viewTab, deck]);
+  }, [
+    cards,
+    deferredQuery,
+    direction,
+    groupFilter,
+    searchIndex,
+    sort,
+    statCompare,
+    statKey,
+    statValue,
+    typeFilter,
+  ]);
 
-  const addToDeck = (card: Card) => {
-    if (card.isToken) return;
-    setDeck(prev => {
-      const current = prev[card.id] || 0;
-      if (current >= 3) return prev;
-      return { ...prev, [card.id]: current + 1 };
-    });
-  };
+  const selectedCard = selection ? allCardsByKey.get(selection.current) ?? null : null;
+  const canGoBack = Boolean(selection && selection.current !== selection.root);
+  const gridStyle = { '--card-columns': gridColumns } as CSSProperties;
 
-  const removeFromDeck = (card: Card) => {
-    setDeck(prev => {
-      const current = prev[card.id] || 0;
-      if (current <= 0) return prev;
-      const next = { ...prev };
-      next[card.id] = current - 1;
-      if (next[card.id] === 0) delete next[card.id];
-      return next;
-    });
-  };
+  useEffect(() => {
+    if (typeFilter !== 'all' && !types.includes(typeFilter)) setTypeFilter('all');
+  }, [typeFilter, types]);
 
-  const handleImport = () => {
-    if (!deckCodeInput.trim()) return;
-    try {
-      const imported = decodeDeck(deckCodeInput.trim());
-      setDeck(imported);
-      setViewTab('deck');
-      setDeckCodeInput('');
-    } catch (e) {
-      alert("Invalid deck code");
+  useEffect(() => {
+    if (groupFilter !== 'all' && !groups.includes(groupFilter)) setGroupFilter('all');
+  }, [groupFilter, groups]);
+
+  useEffect(() => {
+    if (updateNotice) {
+      showToast(updateNotice, 'success');
     }
-  };
+  }, [updateNotice]);
 
-  if (loading) {
-    return (
-      <div className="flex flex-col h-screen items-center justify-center bg-zinc-950 text-white gap-3">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
-        <div className="text-sm text-zinc-400 font-mono animate-pulse">{updateStatus}</div>
-      </div>
-    );
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping =
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.tagName === 'SELECT' ||
+        target?.isContentEditable;
+
+      if (event.key === '/' && !isTyping) {
+        event.preventDefault();
+        document.getElementById('card-search')?.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  function showToast(message: string, tone: ToastMessage['tone'] = 'info') {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast({ id: Date.now(), message, tone });
+    toastTimer.current = window.setTimeout(() => setToast(null), 2800);
   }
 
-  if (error) {
-    return (
-      <div className="flex flex-col h-screen items-center justify-center bg-zinc-950 text-red-400 p-8 text-center max-w-md mx-auto">
-        <h2 className="text-xl font-bold mb-2 text-white">Database Synchronisation Failed</h2>
-        <p className="mb-6 text-sm text-zinc-400 leading-relaxed">{error}</p>
-        <button 
-          onClick={() => window.location.reload()} 
-          className="px-5 py-2.5 bg-zinc-800 text-white hover:bg-zinc-700 text-sm font-semibold rounded-lg transition-colors cursor-pointer"
-        >
-          Retry Synchronisation
-        </button>
-      </div>
-    );
-  }
+  const openCard = useCallback((card: Card) => {
+    const key = cardKey(card);
+    setSelection({ current: key, root: key });
+  }, []);
+
+  const openDestination = useCallback((card: Card) => {
+    const key = cardKey(card);
+    setSelection((previous) => {
+      if (!previous) return { current: key, root: key };
+      return { ...previous, current: key };
+    });
+  }, []);
+
+  const returnToRootCard = useCallback(() => {
+    setSelection((previous) => (previous ? { ...previous, current: previous.root } : previous));
+  }, []);
+
+  const handleAdd = useCallback(
+    (card: Card) => {
+      const result = deck.addCard(card);
+      if (!result.ok) {
+        if (result.message) showToast(result.message, 'warning');
+        return;
+      }
+      if (deck.total + 1 === MAX_DECK_SIZE) {
+        showToast('Deck reached 40 cards.', 'success');
+      }
+    },
+    [deck],
+  );
+
+  const handleClear = useCallback(() => {
+    if (deck.total === 0) return;
+    if (!window.confirm('Clear every card from the current deck?')) return;
+    deck.clearDeck();
+    showToast('Deck cleared.', 'info');
+  }, [deck]);
+
+  const handleImport = useCallback(
+    (nextCounts: Record<number, number>, warnings: string[]) => {
+      deck.replaceDeck(nextCounts);
+      const importedTotal = Object.values(nextCounts).reduce((sum, count) => sum + count, 0);
+      if (warnings.length > 0) {
+        showToast(warnings[0], 'warning');
+      } else {
+        showToast(`Loaded ${importedTotal} cards from the deck code.`, 'success');
+      }
+    },
+    [deck],
+  );
+
+  const resetFilters = useCallback(() => {
+    setQuery('');
+    setTypeFilter('all');
+    setGroupFilter('all');
+    setStatKey('all');
+    setStatCompare('gt');
+    setStatValue('');
+    setSort('id');
+    setDirection('asc');
+  }, []);
+
+  const hasData = Boolean(data);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans flex flex-col md:flex-row">
-      {/* Sidebar Controls */}
-      <div className="w-full md:w-80 bg-zinc-900 border-r border-zinc-800 p-4 flex flex-col gap-6 h-screen sticky top-0 overflow-y-auto shrink-0">
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight mb-1 text-white">Deck Builder</h1>
-            <p className="text-xs text-zinc-400">
-              Total Cards: <span className={deckSize > 40 ? "text-red-500 font-semibold" : "text-zinc-100"}>{deckSize}</span> / 40
-            </p>
-          </div>
-        </div>
+    <div className="app-shell">
+      <Header
+        tab={tab}
+        onTabChange={setTab}
+        status={status}
+        versionLabel={data?.versionLabel ?? null}
+        lastChecked={lastChecked}
+        deckTotal={deck.total}
+        cardCount={cards.length}
+        tokenCount={tokens.length}
+        error={error}
+        searchQuery={query}
+        onSearchChange={setQuery}
+        onRefresh={() => void refresh()}
+      />
 
-        <div className="flex gap-2 p-1 bg-zinc-950 rounded-lg">
-          <button 
-            onClick={() => setViewTab('all')}
-            className={cn("flex-1 text-sm py-1.5 rounded-md transition-colors cursor-pointer", viewTab === 'all' ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white")}
-          >
-            Database
-          </button>
-          <button 
-            onClick={() => setViewTab('deck')}
-            className={cn("flex-1 text-sm py-1.5 rounded-md transition-colors cursor-pointer", viewTab === 'deck' ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-white")}
-          >
-            My Deck
-          </button>
-        </div>
-
-        <div className="space-y-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
-            <input 
-              type="text" 
-              placeholder="Search name or effect..." 
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 pl-9 pr-3 text-sm focus:outline-none focus:border-zinc-600 transition-colors"
-            />
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1"><Filter className="w-3 h-3"/> Filter Type</label>
-            <select 
-              value={typeFilter} 
-              onChange={e => setTypeFilter(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 px-3 text-sm focus:outline-none focus:border-zinc-600"
-            >
-              {cardTypes.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1"><ArrowUpDown className="w-3 h-3"/> Sort By</label>
-            <select 
-              value={sortField} 
-              onChange={e => setSortField(e.target.value as any)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-2 px-3 text-sm focus:outline-none focus:border-zinc-600"
-            >
-              <option value="id">ID (Sequence)</option>
-              <option value="name">Name</option>
-              <option value="group">Group</option>
-              <option value="type">Card Type</option>
-            </select>
-          </div>
-          <div className="flex flex-col gap-2">
-            <label className="text-xs font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1 justify-between">
-              Grid Columns ({gridCols})
-            </label>
-            <input 
-              type="range" 
-              min="5" 
-              max="10" 
-              value={gridCols} 
-              onChange={e => setGridCols(parseInt(e.target.value))}
-              className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-zinc-400"
-            />
-          </div>
-        </div>
-
-        <div className="mt-auto pt-6 border-t border-zinc-800">
-          <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Deck Code</div>
-          <div className="flex gap-2 mb-2">
-            <input 
-              type="text" 
-              readOnly 
-              value={encodeDeck(deck)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-1.5 px-3 text-sm text-zinc-300 focus:outline-none font-mono"
-            />
-            <button 
-              onClick={() => navigator.clipboard.writeText(encodeDeck(deck))}
-              className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md transition-colors cursor-pointer"
-              title="Copy to clipboard"
-            >
-              <Copy className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="flex gap-2">
-            <input 
-              type="text" 
-              placeholder="Paste code..." 
-              value={deckCodeInput}
-              onChange={e => setDeckCodeInput(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-md py-1.5 px-3 text-sm text-zinc-300 focus:outline-none font-mono"
-            />
-            <button 
-              onClick={handleImport}
-              className="px-3 py-1.5 bg-zinc-200 text-zinc-950 hover:bg-white text-sm font-medium rounded-md transition-colors cursor-pointer"
-            >
-              Import
-            </button>
-          </div>
-
-          {confirmClear ? (
-            <div className="flex gap-2 mt-2">
-              <button 
-                onClick={() => {
-                  setDeck({});
-                  setConfirmClear(false);
-                }}
-                className="flex-1 py-1.5 bg-red-600 text-white hover:bg-red-700 text-sm font-medium rounded-md transition-colors cursor-pointer"
-              >
-                Yes, Clear
-              </button>
-              <button 
-                onClick={() => setConfirmClear(false)}
-                className="flex-1 py-1.5 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 text-sm font-medium rounded-md transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
+      {!hasData && status === 'error' ? (
+        <main className="app-container centered-state">
+          <ErrorState message={error ?? 'Unknown error'} hasApiKey={Boolean(API_KEY)} onRetry={() => void refresh()} />
+        </main>
+      ) : !hasData ? (
+        <main className="app-container centered-state">
+          <LoadingState status={status} />
+        </main>
+      ) : (
+        <>
+          {status === 'offline' && error && (
+            <div className="app-container">
+              <OfflineBanner message={error} onRetry={() => void refresh()} />
             </div>
-          ) : (
-            <button 
-              onClick={() => setConfirmClear(true)}
-              className="w-full mt-2 py-1.5 bg-red-950/30 text-red-400 hover:bg-red-950/50 border border-red-900/50 text-sm font-medium rounded-md transition-colors cursor-pointer"
-            >
-              Clear Deck
-            </button>
           )}
-        </div>
-      </div>
 
-      {/* Main Grid */}
-      <div className="flex-1 p-6 overflow-y-auto">
-        <div className={cn("grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4", gridColsClasses[gridCols])}>
-          {filteredCards.map(card => (
-            <div key={card.id} className="group relative bg-zinc-900 rounded-lg overflow-hidden border border-zinc-800 hover:border-zinc-600 transition-colors flex flex-col">
-              <div 
-                className="aspect-[2/3] bg-zinc-950 w-full relative cursor-pointer"
-                onClick={() => setSelectedCard(card)}
-              >
-                {card.imageUrl ? (
-                  <img src={card.imageUrl} alt={card.name} referrerPolicy="no-referrer" className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity" loading="lazy" />
-                ) : (
-                  <div className="absolute inset-0 flex items-center justify-center text-zinc-700">No Image</div>
-                )}
-                {card.isToken && (
-                  <div className="absolute top-2 left-2 bg-purple-900/80 text-purple-200 text-[10px] uppercase px-1.5 py-0.5 rounded backdrop-blur-sm border border-purple-700/50">
-                    Token
-                  </div>
-                )}
-              </div>
-              
-              <div className="p-3 flex flex-col flex-1">
-                <h3 className="font-medium text-sm leading-tight mb-1 truncate" title={card.name}>{card.name}</h3>
-                <div className="text-[10px] text-zinc-500 mb-2 truncate">{card.type} • {card.group}</div>
-                
-                {!card.isToken && (
-                  <div className="mt-auto flex items-center justify-between border-t border-zinc-800 pt-2">
-                    <button 
-                      onClick={() => removeFromDeck(card)}
-                      disabled={!deck[card.id]}
-                      className="p-1 text-zinc-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 rounded transition-colors cursor-pointer"
-                    >
-                      <Minus className="w-4 h-4" />
-                    </button>
-                    <div className={cn(
-                      "text-sm font-mono w-8 text-center",
-                      (deck[card.id] || 0) === 0 ? "text-zinc-500" :
-                      (deck[card.id] || 0) === 1 ? "text-green-500" :
-                      (deck[card.id] || 0) === 2 ? "text-yellow-500" :
-                      "text-red-500"
-                    )}>
-                      {deck[card.id] || 0}
+          <main className="app-container builder-page" hidden={tab !== 'builder'}>
+            <Toolbar
+              query={query}
+              typeFilter={typeFilter}
+              onTypeFilterChange={setTypeFilter}
+              groupFilter={groupFilter}
+              onGroupFilterChange={setGroupFilter}
+              statKey={statKey}
+              onStatKeyChange={setStatKey}
+              statCompare={statCompare}
+              onStatCompareChange={setStatCompare}
+              statValue={statValue}
+              onStatValueChange={setStatValue}
+              sort={sort}
+              onSortChange={setSort}
+              direction={direction}
+              onDirectionChange={setDirection}
+              columns={gridColumns}
+              onColumnsChange={setGridColumns}
+              types={types}
+              groups={groups}
+              typeCounts={typeCounts}
+              resultCount={filteredCards.length}
+              totalCount={cards.length}
+              onReset={resetFilters}
+            />
+
+              <div className="builder-layout">
+                <section className="card-browser" aria-label="Card archive">
+                  {filteredCards.length === 0 ? (
+                    <div className="cards-empty">
+                      <div className="empty-icon large">
+                        <SearchX size={28} />
+                      </div>
+                      <h2>No cards match</h2>
+                      <p>Try a different name, effect, group, or card type.</p>
+                      <button type="button" className="ghost-button" onClick={resetFilters}>
+                        Clear all filters
+                      </button>
                     </div>
-                    <button 
-                      onClick={() => addToDeck(card)}
-                      disabled={(deck[card.id] || 0) >= 3}
-                      className="p-1 text-zinc-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 rounded transition-colors cursor-pointer"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-          {filteredCards.length === 0 && (
-            <div className="col-span-full py-12 text-center text-zinc-500">
-              No cards found matching your criteria.
-            </div>
-          )}
-        </div>
-      </div>
+                  ) : (
+                    <div className="card-grid" style={gridStyle}>
+                      {filteredCards.map((card) => (
+                        <CardTile
+                          key={card.id}
+                          card={card}
+                          count={deck.getCount(card.id)}
+                          onOpen={openCard}
+                          onAdd={handleAdd}
+                          onDecrement={deck.decrement}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
 
-      {/* Card Details Modal */}
+                <DeckPanel
+                  entries={deck.deckCards}
+                  total={deck.total}
+                  unique={deck.unique}
+                  onIncrement={handleAdd}
+                  onDecrement={deck.decrement}
+                  onRemove={deck.removeCard}
+                  onClear={handleClear}
+                  onOpenCode={() => setCodeOpen(true)}
+                  onOpenCard={openCard}
+                  onSwitchToDeck={() => setTab('deck')}
+                />
+              </div>
+            </main>
+
+            <main className="app-container token-page" hidden={tab !== 'tokens'}>
+              <section className="token-heading">
+                <div>
+                  <span className="eyebrow">Token archive</span>
+                  <h2>All tokens</h2>
+                  <p>Tokens are created by effects and cannot be added to a deck.</p>
+                </div>
+                <span className="token-total">
+                  {tokens.length} {tokens.length === 1 ? 'token' : 'tokens'}
+                </span>
+              </section>
+
+              {tokens.length === 0 ? (
+                <div className="cards-empty">
+                  <div className="empty-icon large">
+                    <Sparkles size={28} />
+                  </div>
+                  <h2>No tokens found</h2>
+                  <p>The card database does not contain any token cards yet.</p>
+                </div>
+              ) : (
+                <div className="card-grid token-grid" style={gridStyle}>
+                  {tokens.map((card) => (
+                    <CardTile
+                      key={cardKey(card)}
+                      card={card}
+                      count={0}
+                      onOpen={openCard}
+                      onAdd={handleAdd}
+                      onDecrement={deck.decrement}
+                    />
+                  ))}
+                </div>
+              )}
+            </main>
+
+            <main className="app-container deck-page" hidden={tab !== 'deck'}>
+              <DeckView
+                entries={deck.deckCards}
+                total={deck.total}
+                unique={deck.unique}
+                typeCounts={deck.typeCounts}
+                onBackToBuilder={() => setTab('builder')}
+                onOpenCode={() => setCodeOpen(true)}
+                onClear={handleClear}
+                onIncrement={handleAdd}
+                onDecrement={deck.decrement}
+                onRemove={deck.removeCard}
+                onOpenCard={openCard}
+              />
+            </main>
+
+            <footer className="app-footer app-container">
+            <span>
+              <span className={`footer-dot status-${status}`} />
+              Data cached locally · checked {relativeTime(lastChecked)}
+            </span>
+            <span>
+              {cards.length} cards · {tokens.length} tokens · {groups.length} groups
+            </span>
+            <span>
+              {data?.versionLabel ? `Sheet ${formatVersionLabel(data.versionLabel)}` : 'Local archive'} ·{' '}
+              <a href="#builder" onClick={() => setTab('builder')}>
+                Back to builder <ArrowUpRight size={12} />
+              </a>
+            </span>
+          </footer>
+        </>
+      )}
+
+      {tab === 'builder' && hasData && (
+        <div className="mobile-deck-bar">
+          <div className="mobile-deck-info">
+            <span>Deck</span>
+            <strong>
+              {deck.total} / {MAX_DECK_SIZE}
+            </strong>
+          </div>
+          <div className="mobile-deck-progress">
+            <div
+              className={deck.total > MAX_DECK_SIZE ? 'is-over' : ''}
+              style={{ width: `${Math.min(100, (deck.total / MAX_DECK_SIZE) * 100)}%` }}
+            />
+          </div>
+          <button type="button" onClick={() => setTab('deck')}>
+            <Layers size={15} />
+            View deck
+          </button>
+        </div>
+      )}
+
       {selectedCard && (
-        <CardModal 
-          card={selectedCard} 
-          cards={cards} 
-          onClose={() => setSelectedCard(null)} 
-          onNavigate={(c) => setSelectedCard(c)}
+        <CardDetail
+          key={selection?.current}
+          card={selectedCard}
+          byName={byName}
+          canGoBack={canGoBack}
+          onClose={() => setSelection(null)}
+          onBack={returnToRootCard}
+          onOpenCard={openDestination}
         />
       )}
-    </div>
-  );
-}
 
-function CardModal({ card, cards, onClose, onNavigate }: { card: Card, cards: Card[], onClose: () => void, onNavigate: (c: Card) => void }) {
-  // Find recursive target cards for the current card
-  const targetCards = useMemo(() => {
-    if (!card.targets || card.targets.length === 0) return [];
-    
-    const seen = new Set<string>();
-    seen.add(card.name);
-    
-    const result: Card[] = [];
-    const queue = [...card.targets];
-    
-    while (queue.length > 0) {
-      const currentName = queue.shift()!;
-      if (!seen.has(currentName)) {
-        seen.add(currentName);
-        const tCard = cards.find(c => c.name === currentName);
-        if (tCard) {
-          result.push(tCard);
-          if (tCard.targets) {
-            queue.push(...tCard.targets);
-          }
-        }
-      }
-    }
-    return result;
-  }, [card, cards]);
+      {codeOpen && (
+        <DeckCodeDialog
+          cards={cards}
+          counts={deck.counts}
+          onClose={() => setCodeOpen(false)}
+          onImport={handleImport}
+        />
+      )}
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden w-full max-w-6xl md:h-[85vh] max-h-[95vh] flex flex-col md:flex-row shadow-2xl" onClick={e => e.stopPropagation()}>
-        
-        {/* Image Section */}
-        <div className="w-full md:w-1/2 bg-zinc-950 p-6 flex items-center justify-center h-[45vh] md:h-full">
-          <div className="relative w-full h-full max-w-lg rounded-lg overflow-hidden shadow-2xl border border-zinc-800/50 bg-zinc-900/40 flex items-center justify-center">
-             {card.imageUrl ? (
-                <img src={card.imageUrl} alt={card.name} referrerPolicy="no-referrer" className="w-full h-full object-contain" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-zinc-700">No Image</div>
-              )}
-          </div>
-        </div>
-
-        {/* Details Section */}
-        <div className="w-full md:w-1/2 p-8 overflow-y-auto flex flex-col h-[50vh] md:h-full">
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <h2 className="text-2xl font-bold text-white">{card.name}</h2>
-                {card.isToken && (
-                  <span className="bg-purple-900/50 text-purple-300 text-xs px-2 py-0.5 rounded-full border border-purple-700/50">Token</span>
-                )}
-              </div>
-              <div className="text-sm text-zinc-400">{card.type} • {card.group}</div>
-            </div>
-            <button onClick={onClose} className="text-zinc-500 hover:text-white p-1 bg-zinc-800/50 rounded-md transition-colors"><X className="w-5 h-5"/></button>
-          </div>
-
-          <div className="flex gap-4 mb-6">
-            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 flex-1 text-center">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Cost</div>
-              <div className="font-mono text-lg text-blue-400">{card.cost}</div>
-            </div>
-            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 flex-1 text-center">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Gold</div>
-              <div className="font-mono text-lg text-amber-400">{card.goldCost}</div>
-            </div>
-            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 flex-1 text-center">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">ATK</div>
-              <div className="font-mono text-lg text-red-400">{card.atk}</div>
-            </div>
-            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 flex-1 text-center">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">HP</div>
-              <div className="font-mono text-lg text-green-400">{card.hp}</div>
-            </div>
-          </div>
-
-          <div className="mb-6">
-            <h3 className="text-sm font-medium text-white mb-2">Effect</h3>
-            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-4 text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">
-              {card.effect}
-            </div>
-          </div>
-
-          {targetCards.length > 0 && (
-            <div className="mt-auto pt-4 border-t border-zinc-800">
-              <h3 className="text-sm font-medium text-white mb-3">Related Cards</h3>
-              <div className="flex gap-3 overflow-x-auto pb-2">
-                {targetCards.map(tc => (
-                  <button 
-                    key={tc.id}
-                    onClick={() => onNavigate(tc)}
-                    className="flex-shrink-0 w-24 group"
-                  >
-                    <div className="aspect-[2/3] bg-zinc-950 rounded border border-zinc-800 mb-1 overflow-hidden relative">
-                      {tc.imageUrl && <img src={tc.imageUrl} referrerPolicy="no-referrer" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />}
-                    </div>
-                    <div className="text-[10px] text-center text-zinc-400 truncate group-hover:text-white transition-colors">{tc.name}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      {toast && <Toast toast={toast} onClose={() => setToast(null)} />}
     </div>
   );
 }
